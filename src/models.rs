@@ -30,6 +30,10 @@ pub enum ServiceHealth {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceStatus {
     pub service: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord_message_id: Option<String>,
     pub health: ServiceHealth,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u128>,

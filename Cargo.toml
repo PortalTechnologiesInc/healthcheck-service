@@ -13,3 +13,5 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 uuid = { version = "1", features = ["v4", "fast-rng"] }
 dotenvy = "0.15"
+rusqlite = { version = "0.31", features = ["bundled", "serde_json"] }
+rocket_dyn_templates = { version = "0.2.0-rc.4", features = ["tera"] }

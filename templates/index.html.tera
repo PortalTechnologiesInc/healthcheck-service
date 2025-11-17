@@ -27,7 +27,7 @@
           class="mx-auto flex w-full max-w-4xl flex-col items-center gap-4 px-6 py-6 text-center sm:flex-row sm:items-center sm:justify-between sm:text-left"
         >
           <div class="flex flex-col items-center gap-3 sm:flex-row sm:items-center sm:gap-4">
-            <img src="/logoDark.svg" alt="Portal Status" class="h-16 w-auto drop-shadow-lg" />
+            <img src="/static/logoDark.svg" alt="Portal Status" class="h-16 w-auto drop-shadow-lg" />
             <div>
               <p class="text-xl uppercase tracking-widest">portal status</p>
             </div>
@@ -44,7 +44,7 @@
         <section>
           <h1 class="text-2xl text-white">Service health</h1>
           <p class="text-sm text-slate-400">
-            Live snapshot of all monitored endpoints pulled from <code>services.json</code>.
+            Live snapshot of every upstream monitored by the healthcheck scheduler.
           </p>
         </section>
 
@@ -125,18 +125,18 @@
         const total = snapshot.services.length;
         const openIncidents = snapshot.incidents.filter((inc) => !inc.ended_at).length;
         statusSummaryEl.innerHTML = `
-          <div class="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p class="text-sm text-slate-400">Last updated</p>
-              <p class="text-base text-white">${formatTimestamp(snapshot.generated_at)}</p>
+          <div class="grid gap-4 sm:grid-cols-3">
+            <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-4 text-center sm:text-left">
+              <p class="text-xs uppercase tracking-widest text-slate-500">Last updated</p>
+              <p class="mt-1 text-lg text-white">${formatTimestamp(snapshot.generated_at)}</p>
             </div>
-            <div class="text-right">
-              <p class="text-sm text-slate-400">Systems healthy</p>
-              <p class="text-base text-white">${upCount}/${total}</p>
+            <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-4 text-center sm:text-left">
+              <p class="text-xs uppercase tracking-widest text-slate-500">Systems healthy</p>
+              <p class="mt-1 text-lg text-white">${upCount}/${total}</p>
             </div>
-            <div class="text-right">
-              <p class="text-sm text-slate-400">Open incidents</p>
-              <p class="text-base ${
+            <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-4 text-center sm:text-left">
+              <p class="text-xs uppercase tracking-widest text-slate-500">Open incidents</p>
+              <p class="mt-1 text-lg ${
                 openIncidents ? "text-rose-300" : "text-emerald-300"
               }">${openIncidents}</p>
             </div>
@@ -154,35 +154,37 @@
         serviceListEl.innerHTML = "";
         services.forEach((service) => {
           const meta = healthMeta[service.health] ?? healthMeta.Unknown;
+          const iconName = service.icon ?? "activity";
           const card = document.createElement("article");
           card.className =
             "rounded-2xl border border-[#1f2023] bg-[#151618]/80 p-4 shadow-md shadow-black/40 transition hover:border-[#2c2f36]";
           card.innerHTML = `
-            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p class="text-lg text-white">${service.service}</p>
-                <p class="text-sm text-slate-500">
-                  ${service.error ?? "Responding normally"}
-                </p>
+            <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div class="flex items-center gap-4">
+                <div class="flex h-12 w-12 items-center justify-center rounded-2xl border border-[#2c2f36] bg-[#1d1f22] text-slate-300">
+                  <span data-lucide="${iconName}" class="h-5 w-5"></span>
+                </div>
+                <div>
+                  <p class="text-lg text-white">${service.service}</p>
+                  <p class="text-sm text-slate-500">
+                    ${service.error ?? "Responding normally"}
+                  </p>
+                </div>
               </div>
-              <span class="inline-flex items-center rounded-full border px-3 py-1 text-xs uppercase tracking-wider ${meta.badge}">
+              <span class="inline-flex items-center justify-center rounded-full border px-4 py-2 text-xs uppercase tracking-wider ${meta.badge}">
                 ${meta.label}
               </span>
             </div>
-            <dl class="mt-4 grid grid-cols-1 gap-3 text-sm text-slate-400 sm:grid-cols-3">
-              <div>
-                <dt class="text-xs uppercase tracking-widest text-slate-500">Latency</dt>
-                <dd class="text-white">${formatLatency(service.latency_ms)}</dd>
+            <div class="mt-4 grid gap-3 sm:grid-cols-2">
+              <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-3 text-center sm:text-left">
+                <p class="text-xs uppercase tracking-widest text-slate-500">Latency</p>
+                <p class="mt-1 text-base text-white">${formatLatency(service.latency_ms)}</p>
               </div>
-              <div>
-                <dt class="text-xs uppercase tracking-widest text-slate-500">Last checked</dt>
-                <dd class="text-white">${formatTimestamp(service.last_checked)}</dd>
+              <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-3 text-center sm:text-left">
+                <p class="text-xs uppercase tracking-widest text-slate-500">Incident</p>
+                <p class="mt-1 text-base text-white">${service.incident_id ?? "—"}</p>
               </div>
-              <div>
-                <dt class="text-xs uppercase tracking-widest text-slate-500">Incident</dt>
-                <dd class="text-white">${service.incident_id ?? "—"}</dd>
-              </div>
-            </dl>
+            </div>
           `;
           serviceListEl.appendChild(card);
         });
@@ -227,3 +229,4 @@
     </script>
   </body>
 </html>
+

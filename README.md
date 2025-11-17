@@ -1,48 +1,75 @@
 ## Healthcheck Service
 
-Portal's health monitoring service built with Rocket. It serves a status dashboard, polls downstream services, and emits Discord alerts when downtime or degradations occur.
+Portal's health monitoring service built with Rocket. It serves a Tailwind dashboard, polls downstream services, and emits Discord alerts when downtime or degradations occur. Runtime state is persisted to SQLite so incident history survives restarts, exposed via JSON APIs plus a lightweight client-side UI rendered through Rocket templates.
 
 ### Features
-- Background polling engine driven by Tokio, with per-service configuration.
-- Central state store tracking live status, latency, and incident windows.
-- Discord webhook notifications on status transitions and recoveries.
-- REST API endpoints (`/api/status`, `/api/incidents`) for UI and integrations.
-- Tailwind-based dashboard served alongside the API (server-rendered or minimal-JS fetch).
+- Tokio-driven polling engine with per-service headers/timeouts, backed by `reqwest` + rustls.
+- Shared snapshot (`Arc<RwLock<StateSnapshot>>`) capturing live status, latency, incidents, and poll cadence.
+- Discord webhook notifications emitted on every health transition (`Up`, `Degraded`, `Down`).
+- SQLite-backed incident + snapshot history for cross-restart continuity (default file `healthcheck.db`).
+- Reminder worker that pings the same Discord webhook when outages exceed a configurable duration.
+- REST API surface: `/api/status`, `/api/incidents`, `/api/refresh`.
+- Tailwind dashboard rendered via `rocket_dyn_templates`, consuming `/api/status` and reflecting the live poll interval.
 
 ### Architecture
 1. **Config loader** reads `services.json` (or env) into typed `ServiceConfig` instances.
 2. **Polling task** loops at a configurable interval, calling each service, deriving status, latency, and incident events.
 3. **State manager** (`Arc<RwLock<State>>`) stores latest `ServiceStatus` records plus incident history.
 4. **Discord notifier** sends webhook payloads whenever services change state.
-5. **Rocket routes** expose the current snapshot via JSON and render the dashboard UI.
+5. **Rocket routes** expose the current snapshot via JSON and serve the dashboard UI + static assets.
 
 ```
 [Config] -> [Polling Engine] -> [State Store] -> [API/UI]
                                -> [Discord Webhook]
 ```
 
-### Getting Started
-1. Install Rust toolchain (1.75+ recommended).
-2. Clone repository and install dependencies:
-   ```bash
-   cargo build
-   ```
-3. Configure services in `static/services.json` (temporary) or planned `config/services.toml`.
-4. Set environment variables:
-   - `DISCORD_WEBHOOK_URL` (optional until notifier implemented)
-   - `POLL_INTERVAL_SECS` (defaults to 60)
-5. Run the server:
-   ```bash
-   cargo run
-   ```
-6. Open `http://localhost:8000` to view the dashboard.
+### Requirements
+- Rust 1.75+ (stable toolchain)
+- OpenSSL is **not** required (reqwest is built with `rustls-tls`)
+- Discord webhook URL (optional but recommended)
 
-### Roadmap
-- Implement shared state structs and mock `/api/status`.
-- Build polling engine with incident tracking.
-- Integrate Discord notifications and persistence layer.
-- Convert static HTML into Rocket templates or server-fed JSON.
-- Add tests (unit + integration) and deployment docs.
+### Configuration
+1. **Services**: edit `static/services.json` (temporary home) to describe each upstream. Supported fields:
+   - `expected_status`, `offline_signals`, `headers`, `timeout_ms`, etc.
+2. **Environment**: copy `env.example` to `.env` (already gitignored) and adjust values. Supported variables:
+   - `DISCORD_WEBHOOK_URL` – Discord channel webhook.
+   - `POLL_INTERVAL_SECS` – default 60; minimum enforced at 5.
+   - `REQUEST_TIMEOUT_MS` – fallback request timeout (per-service `timeout_ms` wins).
+   - `HEALTHCHECK_DB_PATH` – optional SQLite file path (defaults to `healthcheck.db` in the workspace).
+   - `OUTAGE_REMINDERS_ENABLED` – set to `false`/`0`/`off` to disable Discord reminder pings.
+   - `OUTAGE_REMINDER_MINUTES` – outage age before reminders start (default 30 minutes).
+   - `OUTAGE_REMINDER_REPEAT_MINUTES` – cadence for subsequent reminders (default matches threshold).
+   - `OUTAGE_REMINDER_CHECK_SECS` – how often the reminder worker scans open incidents (default 60 seconds).
+3. Dotenv is loaded automatically on boot, so `cargo run` picks up `.env`. Override per run with standard env exports if needed.
+
+### Running Locally
+```bash
+cargo run
+# open http://localhost:8000
+```
+The dashboard fetches `/api/status` every interval reported by the backend. Use `/api/refresh` (POST) to force an immediate poll.
+
+### Persistence
+
+- Incidents and snapshots are persisted to a local SQLite file (default `healthcheck.db`). Override the location via `HEALTHCHECK_DB_PATH`.
+- Inspect data with any SQLite client, e.g.:
+  ```bash
+  sqlite3 healthcheck.db 'SELECT service, started_at, ended_at FROM incidents'
+  ```
+
+### API Surface
+- `GET /api/status` → `StateSnapshot` { `services`, `incidents`, `poll_interval_secs`, ... }.
+- `GET /api/incidents` → historical incident records (persisted in SQLite across restarts).
+- `POST /api/refresh` → manually trigger the polling loop (no auth yet).
+
+### Testing & Checks
+- Format/lint: `cargo fmt && cargo clippy --all-targets`
+- Manual webhook test:
+  ```bash
+  curl -XPOST -H "Content-Type: application/json" \
+    -d '{"content":"healthcheck ping"}' "$DISCORD_WEBHOOK_URL"
+  ```
+  Confirm the message hits Discord before relying on automated notifications.
 
 ### Contributing
 1. Fork + clone.
