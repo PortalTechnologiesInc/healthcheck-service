@@ -9,7 +9,7 @@ Portal's health monitoring service built with Rocket. It serves a Tailwind dashb
 - SQLite-backed incident + snapshot history for cross-restart continuity (default file `healthcheck.db`).
 - Reminder worker that pings the same Discord webhook when outages exceed a configurable duration.
 - REST API surface: `/api/status`, `/api/incidents`, `/api/refresh`.
-- Tailwind dashboard rendered via `rocket_dyn_templates`, consuming `/api/status` and reflecting the live poll interval.
+- Tailwind dashboard + dedicated incident log page rendered via `rocket_dyn_templates`, consuming `/api/status` + `/api/incidents` and reflecting the live poll interval.
 
 ### Architecture
 1. **Config loader** reads `services.json` (or env) into typed `ServiceConfig` instances.
@@ -47,7 +47,7 @@ Portal's health monitoring service built with Rocket. It serves a Tailwind dashb
 cargo run
 # open http://localhost:8000
 ```
-The dashboard fetches `/api/status` every interval reported by the backend. Use `/api/refresh` (POST) to force an immediate poll.
+The overview dashboard fetches `/api/status` every interval reported by the backend. Click the “Open incidents” tile (or visit `/incidents`) to view the incident log UI, which reads `/api/incidents` directly in the browser. Use `/api/refresh` (POST) to force an immediate poll.
 
 ### Persistence
 
