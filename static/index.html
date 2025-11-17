@@ -6,7 +6,6 @@
     <title>Portal | Healthcheck Monitor</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.cdnfonts.com/css/minecraftia" />
     <script>
       tailwind = {
         config: {
@@ -30,11 +29,13 @@
           <div class="flex flex-col items-center gap-3 sm:flex-row sm:items-center sm:gap-4">
             <img src="/logoDark.svg" alt="Portal Status" class="h-16 w-auto drop-shadow-lg" />
             <div>
-              <p class="text-xl uppercase tracking-widest text-[#FFED00]">status</p>
+              <p class="text-xl uppercase tracking-widest">portal status</p>
             </div>
           </div>
-          <span class="text-xs uppercase tracking-wider text-slate-500 sm:text-right"
-            >updates every 5 minutes</span
+          <span
+            id="refresh-ticker"
+            class="text-xs uppercase tracking-wider text-slate-500 sm:text-right"
+            >updates every 60 seconds</span
           >
         </div>
       </header>
@@ -47,11 +48,8 @@
           </p>
         </section>
 
-        <section
-          id="status-summary"
-          class="rounded-2xl border border-[#202226] bg-[#161719] px-6 py-4 text-sm font-semibold text-slate-300"
-        >
-          Status provided by backend polling service
+        <section id="status-summary" class="rounded-2xl border border-[#202226] bg-[#161719] px-6 py-4 text-sm text-slate-300">
+          Loading latest snapshot…
         </section>
 
         <section
@@ -77,9 +75,155 @@
     </div>
 
     <script>
-      if (window.lucide?.createIcons && window.lucide?.icons) {
-        window.lucide.createIcons({ icons: window.lucide.icons });
+      const STATUS_ENDPOINT = "/api/status";
+      const statusSummaryEl = document.getElementById("status-summary");
+      const serviceListEl = document.getElementById("service-list");
+      const refreshTickerEl = document.getElementById("refresh-ticker");
+      const healthMeta = {
+        Up: {
+          label: "Online",
+          badge: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+        },
+        Degraded: {
+          label: "Degraded",
+          badge: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+        },
+        Down: {
+          label: "Outage",
+          badge: "bg-rose-500/15 text-rose-300 border-rose-500/30",
+        },
+        Unknown: {
+          label: "Unknown",
+          badge: "bg-slate-600/20 text-slate-300 border-slate-600/30",
+        },
+      };
+
+      let refreshHandle = null;
+      let currentIntervalSec = 60;
+
+      async function fetchStatus() {
+        try {
+          const response = await fetch(STATUS_ENDPOINT, { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(`Request failed: ${response.status}`);
+          }
+          const payload = await response.json();
+          renderSummary(payload);
+          renderServices(payload.services);
+          updateRefreshTicker(payload.poll_interval_secs);
+          scheduleRefresh(payload.poll_interval_secs);
+          scheduleIconRefresh();
+        } catch (err) {
+          console.error("Failed to load status", err);
+          statusSummaryEl.innerHTML =
+            '<div class="text-rose-300">Unable to load snapshot. Retrying…</div>';
+        }
       }
+
+      function renderSummary(snapshot) {
+        const upCount = snapshot.services.filter((svc) => svc.health === "Up").length;
+        const total = snapshot.services.length;
+        const openIncidents = snapshot.incidents.filter((inc) => !inc.ended_at).length;
+        statusSummaryEl.innerHTML = `
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-sm text-slate-400">Last updated</p>
+              <p class="text-base text-white">${formatTimestamp(snapshot.generated_at)}</p>
+            </div>
+            <div class="text-right">
+              <p class="text-sm text-slate-400">Systems healthy</p>
+              <p class="text-base text-white">${upCount}/${total}</p>
+            </div>
+            <div class="text-right">
+              <p class="text-sm text-slate-400">Open incidents</p>
+              <p class="text-base ${
+                openIncidents ? "text-rose-300" : "text-emerald-300"
+              }">${openIncidents}</p>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderServices(services) {
+        if (!services.length) {
+          serviceListEl.innerHTML =
+            '<div class="text-center text-slate-500">No services configured.</div>';
+          return;
+        }
+
+        serviceListEl.innerHTML = "";
+        services.forEach((service) => {
+          const meta = healthMeta[service.health] ?? healthMeta.Unknown;
+          const card = document.createElement("article");
+          card.className =
+            "rounded-2xl border border-[#1f2023] bg-[#151618]/80 p-4 shadow-md shadow-black/40 transition hover:border-[#2c2f36]";
+          card.innerHTML = `
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p class="text-lg text-white">${service.service}</p>
+                <p class="text-sm text-slate-500">
+                  ${service.error ?? "Responding normally"}
+                </p>
+              </div>
+              <span class="inline-flex items-center rounded-full border px-3 py-1 text-xs uppercase tracking-wider ${meta.badge}">
+                ${meta.label}
+              </span>
+            </div>
+            <dl class="mt-4 grid grid-cols-1 gap-3 text-sm text-slate-400 sm:grid-cols-3">
+              <div>
+                <dt class="text-xs uppercase tracking-widest text-slate-500">Latency</dt>
+                <dd class="text-white">${formatLatency(service.latency_ms)}</dd>
+              </div>
+              <div>
+                <dt class="text-xs uppercase tracking-widest text-slate-500">Last checked</dt>
+                <dd class="text-white">${formatTimestamp(service.last_checked)}</dd>
+              </div>
+              <div>
+                <dt class="text-xs uppercase tracking-widest text-slate-500">Incident</dt>
+                <dd class="text-white">${service.incident_id ?? "—"}</dd>
+              </div>
+            </dl>
+          `;
+          serviceListEl.appendChild(card);
+        });
+      }
+
+      function formatTimestamp(epochSeconds) {
+        if (!epochSeconds) return "—";
+        const date = new Date(epochSeconds * 1000);
+        return date.toLocaleString(undefined, {
+          hour: "2-digit",
+          minute: "2-digit",
+          month: "short",
+          day: "numeric",
+        });
+      }
+
+      function formatLatency(latency) {
+        if (latency == null) return "—";
+        return `${latency} ms`;
+      }
+
+      function scheduleIconRefresh() {
+        if (window.lucide?.createIcons && window.lucide?.icons) {
+          window.lucide.createIcons({ icons: window.lucide.icons });
+        }
+      }
+
+      function updateRefreshTicker(intervalSecs) {
+        currentIntervalSec = Math.max(5, intervalSecs ?? currentIntervalSec ?? 60);
+        refreshTickerEl.textContent = `updates every ${currentIntervalSec} seconds`;
+      }
+
+      function scheduleRefresh(intervalSecs) {
+        const effectiveSecs = Math.max(5, intervalSecs ?? currentIntervalSec ?? 60);
+        if (refreshHandle) {
+          clearInterval(refreshHandle);
+        }
+        refreshHandle = setInterval(fetchStatus, effectiveSecs * 1000);
+      }
+
+      fetchStatus();
     </script>
   </body>
 </html>
