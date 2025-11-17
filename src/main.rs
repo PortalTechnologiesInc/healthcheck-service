@@ -92,6 +92,11 @@ fn index() -> Template {
     Template::render("index", context! {})
 }
 
+#[get("/incidents")]
+fn incidents() -> Template {
+    Template::render("incidents", context! {})
+}
+
 #[get("/api/incidents")]
 fn incident_history(state: &rocket::State<SharedState>) -> Json<Vec<Incident>> {
     let incidents = state.read().expect("state poisoned").incidents.clone();
@@ -145,7 +150,7 @@ fn rocket() -> _ {
         .manage(Arc::clone(&notifier))
         .manage(Arc::clone(&storage))
         .mount("/static", FileServer::from(relative!("static")))
-        .mount("/", routes![index, status, incident_history, refresh])
+        .mount("/", routes![index, incidents, status, incident_history, refresh])
         .attach(Template::fairing())
         .attach(AdHoc::on_liftoff("Polling Engine", move |rocket| {
             let state = rocket

@@ -134,12 +134,22 @@
               <p class="text-xs uppercase tracking-widest text-slate-500">Systems healthy</p>
               <p class="mt-1 text-lg text-white">${upCount}/${total}</p>
             </div>
-            <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-4 text-center sm:text-left">
-              <p class="text-xs uppercase tracking-widest text-slate-500">Open incidents</p>
+            <a
+              href="/incidents"
+              class="group rounded-xl border border-[#27292f] bg-[#1b1d21] p-4 text-center transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#FFED00]/60 sm:text-left hover:border-[#FFED00]/40 hover:bg-[#212328]"
+            >
+              <p class="flex items-center justify-center gap-2 text-xs uppercase tracking-widest text-slate-500 sm:justify-start">
+                Open incidents
+                <span
+                  aria-hidden="true"
+                  class="inline-flex h-5 w-5 items-center justify-center rounded-full border border-[#2b2d33] text-[10px] text-slate-400 transition group-hover:border-[#FFED00]/40 group-hover:text-[#FFED00]"
+                  >↗</span
+                >
+              </p>
               <p class="mt-1 text-lg ${
                 openIncidents ? "text-rose-300" : "text-emerald-300"
               }">${openIncidents}</p>
-            </div>
+            </a>
           </div>
         `;
       }

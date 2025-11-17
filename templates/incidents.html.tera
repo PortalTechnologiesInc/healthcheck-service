@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-[#141416] text-slate-100">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Portal | Incident Log</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <script>
+      tailwind = {
+        config: {
+          theme: {
+            extend: {
+              fontFamily: { minecraft: ["Minecraftia", "sans-serif"] },
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+  </head>
+  <body class="h-full font-minecraft bg-[#141416] text-slate-100">
+    <div class="min-h-full flex flex-col">
+      <header class="border-b border-[#1c1e20] bg-[#151618]/90 backdrop-blur">
+        <div
+          class="mx-auto flex w-full max-w-4xl flex-col items-center gap-4 px-6 py-6 text-center sm:flex-row sm:items-center sm:justify-between sm:text-left"
+        >
+          <div class="flex flex-col items-center gap-3 sm:flex-row sm:items-center sm:gap-4">
+            <img src="/static/logoDark.svg" alt="Portal Status" class="h-16 w-auto drop-shadow-lg" />
+            <div>
+              <p class="text-xl uppercase tracking-widest">portal status</p>
+              <p class="text-[10px] uppercase tracking-[0.35em] text-slate-500">incident log</p>
+            </div>
+          </div>
+          <div class="flex flex-col gap-2 text-xs uppercase tracking-wider text-slate-500 sm:text-right">
+            <a
+              href="/"
+              class="inline-flex items-center justify-center gap-2 rounded-full border border-[#2b2d33] px-4 py-1 text-slate-300 transition hover:border-[#FFED00]/60 hover:text-[#FFED00]"
+            >
+              ← Back to overview
+            </a>
+            <button
+              id="incident-refresh"
+              class="inline-flex items-center justify-center gap-2 rounded-full border border-[#2b2d33] px-4 py-1 text-slate-300 transition hover:border-[#FFED00]/60 hover:text-[#FFED00]"
+            >
+              Refresh log
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main class="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-6 py-10">
+        <section>
+          <h1 class="text-2xl text-white">Incident log</h1>
+          <p class="text-sm text-slate-400">
+            Canonical record of outages captured by the scheduler. Open incidents remain highlighted until resolved.
+          </p>
+        </section>
+
+        <section id="incident-summary" class="rounded-2xl border border-[#202226] bg-[#161719] px-6 py-4 text-sm text-slate-300">
+          Loading incident summary…
+        </section>
+
+        <section
+          id="incident-list"
+          class="flex flex-col gap-4 rounded-2xl border border-[#1f2023] bg-[#1a1c1e] p-4 shadow-lg shadow-[0_30px_60px_rgba(0,0,0,0.4)]"
+        >
+          <div class="text-center text-slate-500">Fetching incident history…</div>
+        </section>
+      </main>
+
+      <footer class="border-t border-[#1f2023] py-4 text-center text-xs text-slate-500">
+        Powered by healthcheck-service -
+        <a
+          href="https://github.com/PortalTechnologiesInc/healthcheck-service"
+          class="text-[#FFED00] hover:text-[#e6d600]"
+          target="_blank"
+          rel="noreferrer noopener"
+          >GitHub repo</a
+        >
+      </footer>
+    </div>
+
+    <script>
+      const INCIDENT_ENDPOINT = "/api/incidents";
+      const summaryEl = document.getElementById("incident-summary");
+      const listEl = document.getElementById("incident-list");
+      const refreshBtn = document.getElementById("incident-refresh");
+
+      async function fetchIncidents() {
+        try {
+          refreshBtn.disabled = true;
+          refreshBtn.textContent = "Refreshing…";
+          const response = await fetch(INCIDENT_ENDPOINT, { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(`Request failed: ${response.status}`);
+          }
+          const incidents = await response.json();
+          renderSummary(incidents);
+          renderIncidents(incidents);
+        } catch (err) {
+          console.error("Failed to load incidents", err);
+          summaryEl.innerHTML =
+            '<div class="text-rose-300">Unable to load incident data. Retry shortly.</div>';
+          listEl.innerHTML =
+            '<div class="text-center text-rose-300">Something went wrong loading the log.</div>';
+        } finally {
+          refreshBtn.disabled = false;
+          refreshBtn.textContent = "Refresh log";
+        }
+      }
+
+      function renderSummary(incidents) {
+        const sorted = [...incidents].sort((a, b) => b.started_at - a.started_at);
+        const open = incidents.filter((inc) => !inc.ended_at).length;
+        const latest = sorted[0];
+        summaryEl.innerHTML = `
+          <div class="grid gap-4 sm:grid-cols-3">
+            <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-4 text-center sm:text-left">
+              <p class="text-xs uppercase tracking-widest text-slate-500">Open incidents</p>
+              <p class="mt-1 text-lg ${open ? "text-rose-300" : "text-emerald-300"}">${open}</p>
+            </div>
+            <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-4 text-center sm:text-left">
+              <p class="text-xs uppercase tracking-widest text-slate-500">Total recorded</p>
+              <p class="mt-1 text-lg text-white">${incidents.length}</p>
+            </div>
+            <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-4 text-center sm:text-left">
+              <p class="text-xs uppercase tracking-widest text-slate-500">Last entry</p>
+              <p class="mt-1 text-lg text-white">${latest ? formatTimestamp(latest.started_at) : "—"}</p>
+            </div>
+          </div>
+        `;
+      }
+
+      function renderIncidents(incidents) {
+        if (!incidents.length) {
+          listEl.innerHTML =
+            '<div class="text-center text-slate-500">No incidents have been recorded yet 🎉</div>';
+          return;
+        }
+
+        const now = Math.floor(Date.now() / 1000);
+        const sorted = [...incidents].sort((a, b) => b.started_at - a.started_at);
+        listEl.innerHTML = "";
+
+        sorted.forEach((incident) => {
+          const active = !incident.ended_at;
+          const statusBadge = active
+            ? "border-rose-400/40 bg-rose-500/10 text-rose-200"
+            : "border-emerald-400/40 bg-emerald-500/10 text-emerald-200";
+          const durationSecs = (incident.ended_at ?? now) - incident.started_at;
+          const duration = formatDuration(durationSecs);
+          const article = document.createElement("article");
+          article.className =
+            "rounded-2xl border border-[#1f2023] bg-[#151618]/80 p-4 shadow-md shadow-black/40";
+          article.innerHTML = `
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p class="text-lg text-white">${incident.service}</p>
+                <p class="text-sm text-slate-500">Incident ID: ${incident.id}</p>
+              </div>
+              <span class="inline-flex items-center justify-center rounded-full border px-4 py-2 text-xs uppercase tracking-wider ${statusBadge}">
+                ${active ? "Open" : "Resolved"}
+              </span>
+            </div>
+            <div class="mt-4 grid gap-3 sm:grid-cols-3">
+              <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-3 text-center sm:text-left">
+                <p class="text-xs uppercase tracking-widest text-slate-500">Started</p>
+                <p class="mt-1 text-base text-white">${formatTimestamp(incident.started_at)}</p>
+              </div>
+              <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-3 text-center sm:text-left">
+                <p class="text-xs uppercase tracking-widest text-slate-500">Resolved</p>
+                <p class="mt-1 text-base text-white">${incident.ended_at ? formatTimestamp(incident.ended_at) : "Ongoing"}</p>
+              </div>
+              <div class="rounded-xl border border-[#27292f] bg-[#1b1d21] p-3 text-center sm:text-left">
+                <p class="text-xs uppercase tracking-widest text-slate-500">Duration</p>
+                <p class="mt-1 text-base text-white">${duration}</p>
+              </div>
+            </div>
+            <div class="mt-4 space-y-3 rounded-2xl border border-[#202226] bg-[#181a1c] p-4">
+              <div>
+                <p class="text-xs uppercase tracking-widest text-slate-500">Summary</p>
+                <p class="mt-1 text-sm text-slate-300">${incident.summary ?? "No summary captured."}</p>
+              </div>
+              ${
+                incident.remediation
+                  ? `<div>
+                      <p class="text-xs uppercase tracking-widest text-slate-500">Remediation</p>
+                      <p class="mt-1 text-sm text-slate-300">${incident.remediation}</p>
+                    </div>`
+                  : ""
+              }
+            </div>
+          `;
+          listEl.appendChild(article);
+        });
+      }
+
+      function formatTimestamp(epochSeconds) {
+        if (!epochSeconds) return "—";
+        const date = new Date(epochSeconds * 1000);
+        return date.toLocaleString(undefined, {
+          hour: "2-digit",
+          minute: "2-digit",
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        });
+      }
+
+      function formatDuration(totalSeconds) {
+        if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return "—";
+        const minutes = Math.floor(totalSeconds / 60);
+        const hours = Math.floor(minutes / 60);
+        const days = Math.floor(hours / 24);
+        if (days > 0) {
+          return `${days}d ${hours % 24}h`;
+        }
+        if (hours > 0) {
+          return `${hours}h ${minutes % 60}m`;
+        }
+        return `${Math.max(minutes, 1)}m`;
+      }
+
+      refreshBtn.addEventListener("click", fetchIncidents);
+      fetchIncidents();
+    </script>
+  </body>
+</html>
+
+
