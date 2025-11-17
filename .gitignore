@@ -1,3 +1,4 @@
 /target
 IMPLEMENTATION_PLAN.md
 .env
+*.db

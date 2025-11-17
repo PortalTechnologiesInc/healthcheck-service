@@ -503,17 +503,36 @@ async fn run_polling_loop(
         settings.poll_interval
     );
     let mut ticker = interval(settings.poll_interval);
+    let mut bootstrapped = false;
 
     loop {
         select! {
             _ = ticker.tick() => {
-                poll_and_update(&state, &configs, &settings, &client, &notifier, &storage).await;
+                poll_and_update(
+                    &state,
+                    &configs,
+                    &settings,
+                    &client,
+                    &notifier,
+                    &storage,
+                    bootstrapped,
+                ).await;
+                bootstrapped = true;
             }
             cmd = receiver.recv() => {
                 match cmd {
                     Some(PollCommand::RefreshNow) => {
                         info!("Manual refresh requested");
-                        poll_and_update(&state, &configs, &settings, &client, &notifier, &storage).await;
+                        poll_and_update(
+                            &state,
+                            &configs,
+                            &settings,
+                            &client,
+                            &notifier,
+                            &storage,
+                            bootstrapped,
+                        ).await;
+                        bootstrapped = true;
                     }
                     None => {
                         warn!("Polling command channel closed; stopping loop");
@@ -532,6 +551,7 @@ async fn poll_and_update(
     client: &Client,
     notifier: &Arc<DiscordNotifier>,
     storage: &Arc<Storage>,
+    emit_notifications: bool,
 ) {
     if configs.is_empty() {
         warn!("No service configs loaded; skipping poll");
@@ -570,27 +590,29 @@ async fn poll_and_update(
                 &mut incidents,
             );
 
-            match notifier
-                .notify_transition(
-                    TransitionContext {
-                        service: &cfg.name,
-                        previous: prev_health,
-                        current: status.health,
-                        timestamp: now,
-                        latency_ms: status.latency_ms,
-                        incident_id: status.incident_id.clone(),
-                        error: status.error.clone(),
-                    },
-                    status.discord_message_id.as_deref(),
-                )
-                .await
-            {
-                NotificationResult::Created(message_id) => {
-                    status.discord_message_id = Some(message_id);
-                }
-                NotificationResult::Updated => {}
-                NotificationResult::Failed => {
-                    status.discord_message_id = None;
+            if emit_notifications {
+                match notifier
+                    .notify_transition(
+                        TransitionContext {
+                            service: &cfg.name,
+                            previous: prev_health,
+                            current: status.health,
+                            timestamp: now,
+                            latency_ms: status.latency_ms,
+                            incident_id: status.incident_id.clone(),
+                            error: status.error.clone(),
+                        },
+                        status.discord_message_id.as_deref(),
+                    )
+                    .await
+                {
+                    NotificationResult::Created(message_id) => {
+                        status.discord_message_id = Some(message_id);
+                    }
+                    NotificationResult::Updated => {}
+                    NotificationResult::Failed => {
+                        status.discord_message_id = None;
+                    }
                 }
             }
         } else if status.health != ServiceHealth::Up {
