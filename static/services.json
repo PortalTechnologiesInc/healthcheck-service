@@ -1,0 +1,43 @@
+[
+  {
+    "name": "Notifications",
+    "url": "https://notifications.getportal.cc/healthcheck",
+    "host": "notifications.getportal.cc",
+    "icon": "bell",
+    "expected_status": [200, 404],
+    "offline_signals": [502, 504]
+  },
+  {
+    "name": "Profile",
+    "url": "https://profile.getportal.cc/healthcheck",
+    "host": "profile.getportal.cc",
+    "icon": "user-round",
+    "expected_status": [200, 404],
+    "offline_signals": [502, 504]
+  },
+  {
+    "name": "Demo",
+    "url": "https://demo.getportal.cc/healthcheck",
+    "host": "demo.getportal.cc",
+    "icon": "codepen",
+    "expected_status": [200, 404],
+    "offline_signals": [502, 504]
+  },
+  {
+    "name": "Relay",
+    "url": "https://relay.getportal.cc/healthcheck",
+    "host": "relay.getportal.cc",
+    "icon": "repeat",
+    "expected_status": [200, 404],
+    "offline_signals": [502, 504]
+  },
+  {
+    "name": "Mint",
+    "url": "https://mint.getportal.cc/healthcheck",
+    "host": "mint.getportal.cc",
+    "icon": "coins",
+    "expected_status": [200, 404],
+    "offline_signals": [502, 504]
+  }
+]
+
