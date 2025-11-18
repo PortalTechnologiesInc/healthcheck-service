@@ -3,3 +3,5 @@ healthcheck.db
 IMPLEMENTATION_PLAN.md
 .env
 *.db
+
+result

@@ -118,6 +118,8 @@ async fn refresh(handle: &rocket::State<PollerHandle>) -> HttpStatus {
 fn rocket() -> _ {
     dotenv().ok();
     init_tracing();
+    let static_assets_dir =
+        env::var("STATIC_ASSETS_DIR").unwrap_or_else(|_| relative!("static").to_string());
     let storage =
         Arc::new(Storage::new(database_path()).expect("failed to initialize SQLite storage"));
     let configs = Arc::new(load_service_configs());
@@ -149,7 +151,7 @@ fn rocket() -> _ {
         .manage(http_client.clone())
         .manage(Arc::clone(&notifier))
         .manage(Arc::clone(&storage))
-        .mount("/static", FileServer::from(relative!("static")))
+        .mount("/static", FileServer::from(static_assets_dir))
         .mount("/", routes![index, incidents, status, incident_history, refresh])
         .attach(Template::fairing())
         .attach(AdHoc::on_liftoff("Polling Engine", move |rocket| {
@@ -375,9 +377,9 @@ impl DiscordNotifier {
             }],
         };
 
-        if let Some(message_id) = existing_message_id
+        if existing_message_id.is_some()
             && self
-                .edit_message(webhook, message_id, &payload)
+                .edit_message(webhook, existing_message_id.unwrap(), &payload)
                 .await
                 .unwrap_or(false)
         {
