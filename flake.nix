@@ -72,6 +72,7 @@
               ROCKET_ADDRESS = cfg.host;
               ROCKET_PORT = toString cfg.port;
               ROCKET_TEMPLATE_DIR = "${shareDir}/templates";
+              STATIC_ASSETS_DIR = "${shareDir}/static";
             }
             // optionalAttrs (cfg.discordWebhookUrl != null) {
               DISCORD_WEBHOOK_URL = cfg.discordWebhookUrl;
@@ -208,7 +209,7 @@
           inherit system overlays;
         };
 
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        rustToolchain = pkgs.rust-bin.stable."1.86.0".default.override {
           extensions = [ "rust-src" ];
         };
 

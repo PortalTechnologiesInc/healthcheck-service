@@ -377,9 +377,9 @@ impl DiscordNotifier {
             }],
         };
 
-        if let Some(message_id) = existing_message_id
+        if existing_message_id.is_some()
             && self
-                .edit_message(webhook, message_id, &payload)
+                .edit_message(webhook, existing_message_id.unwrap(), &payload)
                 .await
                 .unwrap_or(false)
         {

@@ -18,12 +18,13 @@ pub struct IncidentWithMeta {
 impl Storage {
     pub fn new(path: impl Into<PathBuf>) -> rusqlite::Result<Self> {
         let path = path.into();
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            let parent_buf = parent.to_path_buf();
-            fs::create_dir_all(&parent_buf)
-                .map_err(|_| rusqlite::Error::InvalidPath(parent_buf.clone()))?;
+        match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => {
+                let parent_buf = parent.to_path_buf();
+                fs::create_dir_all(&parent_buf)
+                    .map_err(|_| rusqlite::Error::InvalidPath(parent_buf.clone()))?;
+            }
+            _ => {}
         }
 
         let conn = Connection::open(path)?;
