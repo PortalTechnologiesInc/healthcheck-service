@@ -18,6 +18,7 @@ use rocket::tokio::{
     time::{Duration as TokioDuration, interval},
 };
 use rocket_dyn_templates::{Template, context};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::sync::{Arc, RwLock};
@@ -29,6 +30,7 @@ use uuid::Uuid;
 const SERVICES_PATH: &str = "static/services.json";
 const DEFAULT_POLL_INTERVAL_SECS: u64 = 60;
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_GRACE_PERIOD_SECS: u64 = 120;
 
 #[derive(Clone)]
 struct PollSettings {
@@ -42,6 +44,11 @@ struct ReminderSettings {
     check_interval: TokioDuration,
     outage_threshold: TokioDuration,
     repeat_interval: TokioDuration,
+}
+
+#[derive(Clone)]
+struct DebounceSettings {
+    grace_period_secs: u64,
 }
 
 #[derive(Clone)]
@@ -125,6 +132,7 @@ fn rocket() -> _ {
     let configs = Arc::new(load_service_configs());
     let poll_settings = Arc::new(load_poll_settings());
     let reminder_settings = Arc::new(load_reminder_settings());
+    let debounce_settings = Arc::new(load_debounce_settings());
     let mut snapshot = build_initial_snapshot(&configs, poll_settings.poll_interval.as_secs());
     match storage.load_incidents() {
         Ok(persisted) => {
@@ -148,6 +156,7 @@ fn rocket() -> _ {
         })
         .manage(Arc::clone(&poll_settings))
         .manage(Arc::clone(&reminder_settings))
+        .manage(Arc::clone(&debounce_settings))
         .manage(http_client.clone())
         .manage(Arc::clone(&notifier))
         .manage(Arc::clone(&storage))
@@ -183,11 +192,16 @@ fn rocket() -> _ {
                 .state::<Arc<ReminderSettings>>()
                 .expect("reminder settings missing")
                 .clone();
+            let debounce_settings = rocket
+                .state::<Arc<DebounceSettings>>()
+                .expect("debounce settings missing")
+                .clone();
             let rx = poll_rx;
 
             Box::pin(async move {
                 let poll_storage = storage.clone();
                 let poll_notifier = notifier.clone();
+                let poll_debounce = debounce_settings.clone();
                 let reminder_storage = storage.clone();
                 let reminder_notifier = notifier.clone();
                 let reminder_settings = reminder_settings.clone();
@@ -200,6 +214,7 @@ fn rocket() -> _ {
                         client,
                         poll_notifier,
                         poll_storage,
+                        poll_debounce,
                         rx,
                     )
                     .await;
@@ -304,6 +319,15 @@ fn load_reminder_settings() -> ReminderSettings {
         outage_threshold: TokioDuration::from_secs(threshold_minutes * 60),
         repeat_interval: TokioDuration::from_secs(repeat_minutes * 60),
     }
+}
+
+fn load_debounce_settings() -> DebounceSettings {
+    let grace_period_secs = env::var("INCIDENT_GRACE_PERIOD_SECS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_GRACE_PERIOD_SECS);
+
+    DebounceSettings { grace_period_secs }
 }
 
 impl DiscordNotifier {
@@ -502,15 +526,19 @@ async fn run_polling_loop(
     client: Client,
     notifier: Arc<DiscordNotifier>,
     storage: Arc<Storage>,
+    debounce: Arc<DebounceSettings>,
     mut receiver: mpsc::Receiver<PollCommand>,
 ) {
     info!(
-        "Starting polling engine for {} services (interval: {:?})",
+        "Starting polling engine for {} services (interval: {:?}, grace period: {}s)",
         configs.len(),
-        settings.poll_interval
+        settings.poll_interval,
+        debounce.grace_period_secs
     );
     let mut ticker = interval(settings.poll_interval);
     let mut bootstrapped = false;
+    // Track pending outages: service name -> timestamp when first detected as down
+    let mut pending_outages: HashMap<String, u64> = HashMap::new();
 
     loop {
         select! {
@@ -522,6 +550,8 @@ async fn run_polling_loop(
                     &client,
                     &notifier,
                     &storage,
+                    &debounce,
+                    &mut pending_outages,
                     bootstrapped,
                 ).await;
                 bootstrapped = true;
@@ -537,6 +567,8 @@ async fn run_polling_loop(
                             &client,
                             &notifier,
                             &storage,
+                            &debounce,
+                            &mut pending_outages,
                             bootstrapped,
                         ).await;
                         bootstrapped = true;
@@ -558,6 +590,8 @@ async fn poll_and_update(
     client: &Client,
     notifier: &Arc<DiscordNotifier>,
     storage: &Arc<Storage>,
+    debounce: &Arc<DebounceSettings>,
+    pending_outages: &mut HashMap<String, u64>,
     emit_notifications: bool,
 ) {
     if configs.is_empty() {
@@ -586,48 +620,113 @@ async fn poll_and_update(
         status.last_checked = Some(now);
         status.error = result.error.clone();
 
-        if status.health != prev_health {
-            status.last_changed = Some(now);
-            handle_incident_transition(
-                cfg,
-                status.health,
-                prev_health,
-                now,
-                &mut status,
-                &mut incidents,
-            );
+        // Debounce logic: delay incident creation until grace period elapses
+        let is_unhealthy = matches!(status.health, ServiceHealth::Down | ServiceHealth::Degraded);
+        let was_healthy = matches!(prev_health, ServiceHealth::Up | ServiceHealth::Unknown);
 
-            if emit_notifications {
-                match notifier
-                    .notify_transition(
-                        TransitionContext {
-                            service: &cfg.name,
-                            previous: prev_health,
-                            current: status.health,
-                            timestamp: now,
-                            latency_ms: status.latency_ms,
-                            incident_id: status.incident_id.clone(),
-                            error: status.error.clone(),
-                        },
-                        status.discord_message_id.as_deref(),
-                    )
-                    .await
-                {
-                    NotificationResult::Created(message_id) => {
-                        status.discord_message_id = Some(message_id);
+        if is_unhealthy {
+            if was_healthy {
+                // Service just went down - start tracking pending outage
+                pending_outages.entry(cfg.name.clone()).or_insert(now);
+                info!(
+                    "Service {} detected as {:?}, starting grace period",
+                    cfg.name, status.health
+                );
+            }
+
+            // Check if grace period has elapsed
+            if let Some(&outage_start) = pending_outages.get(&cfg.name) {
+                let elapsed = now.saturating_sub(outage_start);
+                if elapsed >= debounce.grace_period_secs {
+                    // Grace period elapsed - create incident if not already exists
+                    if find_open_incident(&cfg.name, incidents.as_mut_slice()).is_none() {
+                        status.last_changed = Some(outage_start);
+                        handle_incident_transition(
+                            cfg,
+                            status.health,
+                            ServiceHealth::Up, // Treat as transition from Up
+                            outage_start,
+                            &mut status,
+                            &mut incidents,
+                        );
+
+                        if emit_notifications {
+                            match notifier
+                                .notify_transition(
+                                    TransitionContext {
+                                        service: &cfg.name,
+                                        previous: ServiceHealth::Up,
+                                        current: status.health,
+                                        timestamp: now,
+                                        latency_ms: status.latency_ms,
+                                        incident_id: status.incident_id.clone(),
+                                        error: status.error.clone(),
+                                    },
+                                    status.discord_message_id.as_deref(),
+                                )
+                                .await
+                            {
+                                NotificationResult::Created(message_id) => {
+                                    status.discord_message_id = Some(message_id);
+                                }
+                                NotificationResult::Updated => {}
+                                NotificationResult::Failed => {
+                                    status.discord_message_id = None;
+                                }
+                            }
+                        }
+                    } else {
+                        // Already have an open incident
+                        if let Some(open) = find_open_incident(&cfg.name, incidents.as_mut_slice()) {
+                            status.incident_id = Some(open.id.clone());
+                        }
                     }
-                    NotificationResult::Updated => {}
-                    NotificationResult::Failed => {
-                        status.discord_message_id = None;
+                }
+                // Else: still within grace period, don't create incident yet
+            }
+        } else if status.health == ServiceHealth::Up {
+            // Service is back up
+            if pending_outages.remove(&cfg.name).is_some() {
+                info!(
+                    "Service {} recovered within grace period, no incident created",
+                    cfg.name
+                );
+            }
+
+            // Close any open incident
+            if let Some(open) = find_open_incident(&cfg.name, incidents.as_mut_slice()) {
+                open.ended_at = Some(now);
+                status.last_changed = Some(now);
+
+                if emit_notifications {
+                    match notifier
+                        .notify_transition(
+                            TransitionContext {
+                                service: &cfg.name,
+                                previous: prev_health,
+                                current: status.health,
+                                timestamp: now,
+                                latency_ms: status.latency_ms,
+                                incident_id: Some(open.id.clone()),
+                                error: None,
+                            },
+                            status.discord_message_id.as_deref(),
+                        )
+                        .await
+                    {
+                        NotificationResult::Created(message_id) => {
+                            status.discord_message_id = Some(message_id);
+                        }
+                        NotificationResult::Updated => {}
+                        NotificationResult::Failed => {
+                            status.discord_message_id = None;
+                        }
                     }
                 }
             }
-        } else if status.health != ServiceHealth::Up {
-            // Preserve existing open incident linkage
-            if let Some(open) = find_open_incident(&cfg.name, incidents.as_mut_slice()) {
-                status.incident_id = Some(open.id.clone());
-            }
+            status.incident_id = None;
         } else {
+            // Unknown state
             status.incident_id = None;
         }
 
