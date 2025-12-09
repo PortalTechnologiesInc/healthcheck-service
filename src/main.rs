@@ -4,9 +4,10 @@ extern crate rocket;
 mod models;
 mod storage;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc, Weekday};
 use dotenvy::dotenv;
 use models::{Incident, ServiceConfig, ServiceHealth, ServiceStatus, SharedState, StateSnapshot};
+use storage::WeeklyStats;
 use reqwest::Client;
 use rocket::fairing::AdHoc;
 use rocket::fs::{FileServer, relative};
@@ -49,6 +50,13 @@ struct ReminderSettings {
 #[derive(Clone)]
 struct DebounceSettings {
     grace_period_secs: u64,
+}
+
+#[derive(Clone)]
+struct WeeklyReportSettings {
+    enabled: bool,
+    day: Weekday,
+    hour: u32,
 }
 
 #[derive(Clone)]
@@ -133,6 +141,7 @@ fn rocket() -> _ {
     let poll_settings = Arc::new(load_poll_settings());
     let reminder_settings = Arc::new(load_reminder_settings());
     let debounce_settings = Arc::new(load_debounce_settings());
+    let weekly_report_settings = Arc::new(load_weekly_report_settings());
     let mut snapshot = build_initial_snapshot(&configs, poll_settings.poll_interval.as_secs());
     match storage.load_incidents() {
         Ok(persisted) => {
@@ -157,6 +166,7 @@ fn rocket() -> _ {
         .manage(Arc::clone(&poll_settings))
         .manage(Arc::clone(&reminder_settings))
         .manage(Arc::clone(&debounce_settings))
+        .manage(Arc::clone(&weekly_report_settings))
         .manage(http_client.clone())
         .manage(Arc::clone(&notifier))
         .manage(Arc::clone(&storage))
@@ -196,6 +206,10 @@ fn rocket() -> _ {
                 .state::<Arc<DebounceSettings>>()
                 .expect("debounce settings missing")
                 .clone();
+            let weekly_report_settings = rocket
+                .state::<Arc<WeeklyReportSettings>>()
+                .expect("weekly report settings missing")
+                .clone();
             let rx = poll_rx;
 
             Box::pin(async move {
@@ -205,6 +219,9 @@ fn rocket() -> _ {
                 let reminder_storage = storage.clone();
                 let reminder_notifier = notifier.clone();
                 let reminder_settings = reminder_settings.clone();
+                let weekly_storage = storage.clone();
+                let weekly_notifier = notifier.clone();
+                let weekly_settings = weekly_report_settings.clone();
 
                 tokio::spawn(async move {
                     run_polling_loop(
@@ -222,6 +239,10 @@ fn rocket() -> _ {
 
                 tokio::spawn(async move {
                     reminder_watcher(reminder_storage, reminder_notifier, reminder_settings).await;
+                });
+
+                tokio::spawn(async move {
+                    weekly_report_watcher(weekly_storage, weekly_notifier, weekly_settings).await;
                 });
             })
         }))
@@ -328,6 +349,37 @@ fn load_debounce_settings() -> DebounceSettings {
         .unwrap_or(DEFAULT_GRACE_PERIOD_SECS);
 
     DebounceSettings { grace_period_secs }
+}
+
+fn load_weekly_report_settings() -> WeeklyReportSettings {
+    let enabled = env::var("WEEKLY_REPORT_ENABLED")
+        .map(|raw| {
+            let lowered = raw.to_lowercase();
+            !matches!(lowered.as_str(), "0" | "false" | "off")
+        })
+        .unwrap_or(true);
+
+    let day = env::var("WEEKLY_REPORT_DAY")
+        .ok()
+        .and_then(|raw| match raw.to_lowercase().as_str() {
+            "monday" | "mon" | "1" => Some(Weekday::Mon),
+            "tuesday" | "tue" | "2" => Some(Weekday::Tue),
+            "wednesday" | "wed" | "3" => Some(Weekday::Wed),
+            "thursday" | "thu" | "4" => Some(Weekday::Thu),
+            "friday" | "fri" | "5" => Some(Weekday::Fri),
+            "saturday" | "sat" | "6" => Some(Weekday::Sat),
+            "sunday" | "sun" | "0" | "7" => Some(Weekday::Sun),
+            _ => None,
+        })
+        .unwrap_or(Weekday::Sun);
+
+    let hour = env::var("WEEKLY_REPORT_HOUR")
+        .ok()
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .unwrap_or(9)
+        .min(23);
+
+    WeeklyReportSettings { enabled, day, hour }
 }
 
 impl DiscordNotifier {
@@ -446,6 +498,67 @@ impl DiscordNotifier {
 
         if let Err(err) = self.client.post(webhook).json(&payload).send().await {
             warn!("Failed to send Discord reminder: {err}");
+        }
+    }
+
+    async fn notify_weekly_report(&self, stats: &WeeklyStats, week_start: u64, week_end: u64) {
+        let Some(webhook) = &self.webhook_url else {
+            return;
+        };
+
+        // Build per-service fields
+        let mut fields: Vec<DiscordField> = stats
+            .services
+            .iter()
+            .map(|(name, svc_stats)| {
+                let latency_str = svc_stats
+                    .avg_latency_ms
+                    .map(|l| format!("{:.1}ms", l))
+                    .unwrap_or_else(|| "n/a".to_string());
+                DiscordField {
+                    name: name.clone(),
+                    value: format!(
+                        "Uptime: {:.2}%\nAvg Latency: {}",
+                        svc_stats.uptime_percentage, latency_str
+                    ),
+                    inline: true,
+                }
+            })
+            .collect();
+
+        // Add summary fields
+        fields.push(DiscordField {
+            name: "Total Incidents".to_string(),
+            value: stats.total_incidents.to_string(),
+            inline: true,
+        });
+
+        if let Some(ref longest) = stats.longest_outage {
+            let duration_str = format_duration(longest.duration_secs);
+            fields.push(DiscordField {
+                name: "Longest Outage".to_string(),
+                value: format!("{}: {}", longest.service, duration_str),
+                inline: true,
+            });
+        }
+
+        let payload = DiscordPayload {
+            username: "Portal Healthcheck",
+            content: format!(
+                ":bar_chart: **Weekly Status Report** ({} - {})",
+                iso_timestamp(week_start),
+                iso_timestamp(week_end)
+            ),
+            embeds: vec![DiscordEmbed {
+                title: "Service Health Summary".to_string(),
+                description: "Weekly performance metrics for all monitored services.".to_string(),
+                color: 0x3b82f6, // Blue color for reports
+                fields,
+            }],
+        };
+
+        if let Err(err) = self.client.post(webhook).json(&payload).send().await {
+            warn!("Failed to send weekly report: {err}");
         }
     }
 
@@ -868,6 +981,16 @@ fn iso_timestamp(ts: u64) -> String {
         .to_rfc3339()
 }
 
+fn format_duration(secs: u64) -> String {
+    let hours = secs / 3600;
+    let minutes = (secs % 3600) / 60;
+    if hours > 0 {
+        format!("{}h {}m", hours, minutes)
+    } else {
+        format!("{}m", minutes)
+    }
+}
+
 fn persist_snapshot(storage: &Arc<Storage>, snapshot: &StateSnapshot) {
     for incident in &snapshot.incidents {
         if let Err(err) = storage.upsert_incident(incident) {
@@ -942,6 +1065,94 @@ async fn reminder_watcher(
                 );
             }
         }
+    }
+}
+
+async fn weekly_report_watcher(
+    storage: Arc<Storage>,
+    notifier: Arc<DiscordNotifier>,
+    settings: Arc<WeeklyReportSettings>,
+) {
+    if !settings.enabled {
+        info!("Weekly reports disabled; watcher not started");
+        return;
+    }
+
+    info!(
+        "Starting weekly report watcher (day: {:?}, hour: {})",
+        settings.day, settings.hour
+    );
+
+    loop {
+        // Calculate time until next report
+        let now = Utc::now();
+        let target_weekday = settings.day;
+        let target_hour = settings.hour;
+
+        // Find days until target weekday
+        let current_weekday = now.weekday();
+        let days_until = days_until_weekday(current_weekday, target_weekday);
+
+        // Calculate target datetime
+        let target = if days_until == 0 && now.hour() < target_hour {
+            // Same day, but before target hour
+            now.date_naive()
+                .and_hms_opt(target_hour, 0, 0)
+                .unwrap()
+                .and_utc()
+        } else if days_until == 0 && now.hour() >= target_hour {
+            // Same day but past target hour, go to next week
+            (now + chrono::Duration::days(7))
+                .date_naive()
+                .and_hms_opt(target_hour, 0, 0)
+                .unwrap()
+                .and_utc()
+        } else {
+            // Future day this week
+            (now + chrono::Duration::days(days_until as i64))
+                .date_naive()
+                .and_hms_opt(target_hour, 0, 0)
+                .unwrap()
+                .and_utc()
+        };
+
+        let sleep_duration = (target - now).to_std().unwrap_or(StdDuration::from_secs(3600));
+        info!(
+            "Next weekly report scheduled for {} (in {:?})",
+            target.to_rfc3339(),
+            sleep_duration
+        );
+
+        tokio::time::sleep(sleep_duration).await;
+
+        if !notifier.is_configured() {
+            warn!("Discord webhook not configured, skipping weekly report");
+            continue;
+        }
+
+        // Calculate week range (7 days back from now)
+        let week_end = current_timestamp();
+        let week_start = week_end.saturating_sub(7 * 24 * 3600);
+
+        match storage.get_weekly_stats(week_start, week_end) {
+            Ok(stats) => {
+                info!("Sending weekly report with {} services", stats.services.len());
+                notifier.notify_weekly_report(&stats, week_start, week_end).await;
+            }
+            Err(err) => {
+                warn!("Failed to gather weekly stats: {err}");
+            }
+        }
+    }
+}
+
+fn days_until_weekday(current: Weekday, target: Weekday) -> u32 {
+    let current_num = current.num_days_from_sunday();
+    let target_num = target.num_days_from_sunday();
+    if target_num >= current_num {
+        target_num - current_num
+    } else {
+        7 - (current_num - target_num)
     }
 }
 
