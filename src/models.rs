@@ -15,6 +15,52 @@ pub struct ServiceConfig {
     pub headers: Option<HashMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assertions: Option<Vec<HealthAssertion>>,
+}
+
+/// Assertion to evaluate against a JSON health-check response body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum HealthAssertion {
+    /// Check that a JSON field equals an expected string value.
+    #[serde(rename = "field_equals")]
+    FieldEquals {
+        field: String,
+        value: String,
+        #[serde(default = "default_down")]
+        on_fail: HealthAssertionSeverity,
+    },
+    /// Check that one numeric field is >= another numeric field.
+    #[serde(rename = "field_gte")]
+    FieldGte {
+        field: String,
+        other_field: String,
+        #[serde(default = "default_degraded")]
+        on_fail: HealthAssertionSeverity,
+    },
+    /// Check that a numeric field is > 0.
+    #[serde(rename = "field_positive")]
+    FieldPositive {
+        field: String,
+        #[serde(default = "default_down")]
+        on_fail: HealthAssertionSeverity,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HealthAssertionSeverity {
+    Degraded,
+    Down,
+}
+
+fn default_down() -> HealthAssertionSeverity {
+    HealthAssertionSeverity::Down
+}
+
+fn default_degraded() -> HealthAssertionSeverity {
+    HealthAssertionSeverity::Degraded
 }
 
 /// Health state exposed to the UI/API.

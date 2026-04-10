@@ -6,7 +6,10 @@ mod storage;
 
 use chrono::{DateTime, Datelike, Timelike, Utc, Weekday};
 use dotenvy::dotenv;
-use models::{Incident, ServiceConfig, ServiceHealth, ServiceStatus, SharedState, StateSnapshot};
+use models::{
+    HealthAssertion, HealthAssertionSeverity, Incident, ServiceConfig, ServiceHealth,
+    ServiceStatus, SharedState, StateSnapshot,
+};
 use storage::WeeklyStats;
 use reqwest::Client;
 use rocket::fairing::AdHoc;
@@ -890,14 +893,67 @@ async fn check_service(
         Ok(response) => {
             let status = response.status().as_u16();
             let latency = start.elapsed().as_millis();
-            let health = classify_status(status, config);
-            let error = if matches!(health, ServiceHealth::Up) {
+            let http_health = classify_status(status, config);
+
+            // If HTTP itself says Down, short-circuit
+            if http_health == ServiceHealth::Down {
+                return CheckResult {
+                    health: ServiceHealth::Down,
+                    latency_ms: Some(latency),
+                    error: Some(format!("Unexpected status {} from {}", status, config.host)),
+                };
+            }
+
+            // If there are body assertions, evaluate them
+            if let Some(assertions) = &config.assertions {
+              if !assertions.is_empty() {
+                match response.text().await {
+                    Ok(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+                        Ok(json) => {
+                            let (assertion_health, assertion_error) =
+                                evaluate_assertions(&config.name, assertions, &json);
+                            let final_health = worst_health(http_health, assertion_health);
+                            return CheckResult {
+                                health: final_health,
+                                latency_ms: Some(latency),
+                                error: assertion_error,
+                            };
+                        }
+                        Err(err) => {
+                            warn!("Failed to parse JSON body from {}: {err}", config.name);
+                            return CheckResult {
+                                health: ServiceHealth::Degraded,
+                                latency_ms: Some(latency),
+                                error: Some(format!(
+                                    "Invalid JSON response from {}: {err}",
+                                    config.host
+                                )),
+                            };
+                        }
+                    },
+                    Err(err) => {
+                        warn!("Failed to read response body from {}: {err}", config.name);
+                        return CheckResult {
+                            health: ServiceHealth::Degraded,
+                            latency_ms: Some(latency),
+                            error: Some(format!(
+                                "Failed to read body from {}: {err}",
+                                config.host
+                            )),
+                        };
+                    }
+                }
+              }
+            }
+
+            // No assertions — use HTTP status only
+            let error = if matches!(http_health, ServiceHealth::Up) {
                 None
             } else {
                 Some(format!("Unexpected status {} from {}", status, config.host))
             };
             CheckResult {
-                health,
+                health: http_health,
                 latency_ms: Some(latency),
                 error,
             }
@@ -911,6 +967,113 @@ async fn check_service(
             }
         }
     }
+}
+
+/// Evaluate body assertions and return the resulting health + optional error message.
+fn evaluate_assertions(
+    service: &str,
+    assertions: &[HealthAssertion],
+    body: &serde_json::Value,
+) -> (ServiceHealth, Option<String>) {
+    let mut worst = ServiceHealth::Up;
+    let mut errors: Vec<String> = Vec::new();
+
+    for assertion in assertions {
+        match assertion {
+            HealthAssertion::FieldEquals {
+                field,
+                value,
+                on_fail,
+            } => {
+                let actual = body.get(field).and_then(|v| match v {
+                    serde_json::Value::String(s) => Some(s.as_str()),
+                    _ => None,
+                });
+                if actual != Some(value.as_str()) {
+                    let actual_str = actual.unwrap_or("<missing>");
+                    let msg = format!(
+                        "{service}: {field}={actual_str}, expected {value}"
+                    );
+                    warn!("Assertion failed: {msg}");
+                    errors.push(msg);
+                    worst = worst_health(worst, severity_to_health(*on_fail));
+                }
+            }
+            HealthAssertion::FieldGte {
+                field,
+                other_field,
+                on_fail,
+            } => {
+                let a = body.get(field).and_then(|v| v.as_f64());
+                let b = body.get(other_field).and_then(|v| v.as_f64());
+                match (a, b) {
+                    (Some(av), Some(bv)) if av < bv => {
+                        let msg = format!(
+                            "{service}: {field}={av} < {other_field}={bv}"
+                        );
+                        warn!("Assertion failed: {msg}");
+                        errors.push(msg);
+                        worst = worst_health(worst, severity_to_health(*on_fail));
+                    }
+                    (None, _) | (_, None) => {
+                        let msg = format!(
+                            "{service}: missing numeric field(s) {field}/{other_field}"
+                        );
+                        warn!("Assertion failed: {msg}");
+                        errors.push(msg);
+                        worst = worst_health(worst, severity_to_health(*on_fail));
+                    }
+                    _ => {} // a >= b, pass
+                }
+            }
+            HealthAssertion::FieldPositive { field, on_fail } => {
+                let val = body.get(field).and_then(|v| v.as_f64());
+                match val {
+                    Some(v) if v <= 0.0 => {
+                        let msg = format!("{service}: {field}={v}, expected > 0");
+                        warn!("Assertion failed: {msg}");
+                        errors.push(msg);
+                        worst = worst_health(worst, severity_to_health(*on_fail));
+                    }
+                    None => {
+                        let msg =
+                            format!("{service}: missing numeric field {field}");
+                        warn!("Assertion failed: {msg}");
+                        errors.push(msg);
+                        worst = worst_health(worst, severity_to_health(*on_fail));
+                    }
+                    _ => {} // positive, pass
+                }
+            }
+        }
+    }
+
+    let error = if errors.is_empty() {
+        None
+    } else {
+        Some(errors.join("; "))
+    };
+    (worst, error)
+}
+
+fn severity_to_health(severity: HealthAssertionSeverity) -> ServiceHealth {
+    match severity {
+        HealthAssertionSeverity::Down => ServiceHealth::Down,
+        HealthAssertionSeverity::Degraded => ServiceHealth::Degraded,
+    }
+}
+
+/// Return the worse of two health states (Down > Degraded > Unknown > Up).
+fn worst_health(a: ServiceHealth, b: ServiceHealth) -> ServiceHealth {
+    fn rank(h: ServiceHealth) -> u8 {
+        match h {
+            ServiceHealth::Up => 0,
+            ServiceHealth::Unknown => 1,
+            ServiceHealth::Degraded => 2,
+            ServiceHealth::Down => 3,
+        }
+    }
+    if rank(a) >= rank(b) { a } else { b }
 }
 
 fn classify_status(code: u16, config: &ServiceConfig) -> ServiceHealth {
