@@ -1163,6 +1163,24 @@ fn persist_snapshot(storage: &Arc<Storage>, snapshot: &StateSnapshot) {
 
     if let Err(err) = storage.record_snapshot(snapshot) {
         warn!("Failed to persist snapshot: {err}");
+        return;
+    }
+
+    let retention_days = env::var("SNAPSHOT_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30);
+
+    if retention_days > 0 {
+        match storage.prune_old_snapshots(retention_days) {
+            Ok(deleted) if deleted > 0 => {
+                info!(
+                    "Pruned {deleted} old snapshots (retention: {retention_days} days)"
+                );
+            }
+            Ok(_) => {}
+            Err(err) => warn!("Failed to prune old snapshots: {err}"),
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::models::{Incident, ServiceHealth, StateSnapshot};
+use chrono::Utc;
 use rusqlite::{Connection, params};
 use std::collections::HashMap;
 use std::fs;
@@ -78,6 +79,9 @@ impl Storage {
                 generated_at INTEGER NOT NULL,
                 payload TEXT NOT NULL
             );
+
+            CREATE INDEX IF NOT EXISTS idx_snapshots_generated_at
+                ON snapshots(generated_at);
             "#,
         )?;
         Ok(())
@@ -191,6 +195,16 @@ impl Storage {
             params![snapshot.generated_at as i64, payload],
         )?;
         Ok(())
+    }
+
+    pub fn prune_old_snapshots(&self, retention_days: u64) -> rusqlite::Result<usize> {
+        let cutoff = Utc::now().timestamp() - (retention_days as i64 * 24 * 60 * 60);
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let deleted = conn.execute(
+            "DELETE FROM snapshots WHERE generated_at < ?1",
+            params![cutoff],
+        )?;
+        Ok(deleted)
     }
 
     #[allow(dead_code)]
