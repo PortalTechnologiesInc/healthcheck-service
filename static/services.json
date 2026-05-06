@@ -51,19 +51,6 @@
       {"type": "field_equals", "field": "database", "value": "ok", "on_fail": "degraded"},
       {"type": "field_equals", "field": "docker", "value": "ok", "on_fail": "degraded"}
     ]
-  },
-  {
-    "name": "Verify",
-    "url": "https://verify.getportal.cc/health",
-    "host": "verify.getportal.cc",
-    "icon": "shield-check",
-    "expected_status": [200],
-    "offline_signals": [502, 504],
-    "assertions": [
-      {"type": "field_equals", "field": "status", "value": "ok", "on_fail": "down"},
-      {"type": "field_positive", "field": "active_workers", "on_fail": "down"},
-      {"type": "field_gte", "field": "active_workers", "other_field": "total_workers", "on_fail": "degraded"}
-    ]
   }
 ]
 
