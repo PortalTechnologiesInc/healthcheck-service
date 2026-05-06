@@ -65,6 +65,7 @@
               POLL_INTERVAL_SECS = toString cfg.pollIntervalSecs;
               REQUEST_TIMEOUT_MS = toString cfg.requestTimeoutMs;
               HEALTHCHECK_DB_PATH = cfg.healthcheckDbPath;
+              SNAPSHOT_RETENTION_DAYS = toString cfg.snapshotRetentionDays;
               OUTAGE_REMINDERS_ENABLED = if cfg.remindersEnabled then "true" else "false";
               OUTAGE_REMINDER_MINUTES = toString cfg.outageReminderMinutes;
               OUTAGE_REMINDER_REPEAT_MINUTES = toString cfg.outageReminderRepeatMinutes;
@@ -135,6 +136,12 @@
               type = types.str;
               default = "/var/lib/healthcheck-service/healthcheck.db";
               description = "SQLite database path used to persist incidents and snapshots.";
+            };
+
+            snapshotRetentionDays = mkOption {
+              type = types.int;
+              default = 30;
+              description = "How many days of snapshots to keep (set 0 to disable pruning).";
             };
 
             remindersEnabled = mkOption {
